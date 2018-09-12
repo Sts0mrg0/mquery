@@ -15,17 +15,49 @@ class YaraParser(object):
     def string_to_query(self, value):
         value = value.strip()
         if value[0] == '{' and value[-1] == '}':
-            consecutive = ['']
-            value = value[1:-1].strip()
-            hexdigs = 'ABCDEFabcdef0123456789'
-            for c in value.split(' '):
-                if len(c) == 2 and c != '??' and (c[0] == '?' or c[1] == '?'):
-                    consecutive[-1] += c
-                elif len(c) == 2 and c[0] in hexdigs and c[1] in hexdigs:
-                    consecutive[-1] += c
+            hexbytes = ['']
+
+            # make a list of characters without first and last one ("{" and "}")
+            chars = list(value[:-1][1:])
+
+            while chars:
+                hexdigs = 'ABCDEF0123456789?'
+                char = chars.pop(0).upper()
+
+                if char == '[':
+                    while chars and chars.pop(0) != ']':
+                        pass
+
+                    if hexbytes[-1]:
+                        hexbytes.append('')
+
+                    continue
+
+                if char == ' ':
+                    continue
+
+                if char not in hexdigs:
+                    assert False
+
+                char2 = chars.pop(0)
+
+                if char2 not in hexdigs:
+                    assert False
+
+                hexbyte = char + char2
+
+                if hexbyte == '??':
+                    if hexbytes[-1]:
+                        hexbytes.append('')
                 else:
-                    consecutive.append('')
-            return '(' + ' & '.join('{' + c + '}' for c in consecutive if len(c) >= 6) + ')'
+                    hexbytes[-1] += hexbyte
+
+            hexbytes = list(filter(lambda hexbyte: hexbyte >= 6, hexbytes))
+
+            if not hexbytes:
+                hexbytes = ['']
+
+            return '(' + ' & '.join('{' + hexbyte + '}' for hexbyte in hexbytes) + ')'
         elif value[0] == '"' and value[-1] == '"':
             return "\"" + value[1:-1] + "\""
         elif value[0] == "\"" and value[-1] == "\"":
@@ -94,14 +126,26 @@ class YaraParser(object):
             Literal('all'),
             Word('0123456789'),
         ])
+
         bracketed_atom = (Literal('(').suppress() + expression + Literal(')').suppress())
+
+        offset_var = Word(string.ascii_letters + string.digits).setParseAction(self.act_ignore)
+        offset_expr = (offset_var + Literal('(').suppress() + offset_var + Literal(')').suppress() + '==' + Word(
+            string.hexdigits + 'x')).setParseAction(self.act_ignore)
+
+        comparison_var = Word("<>").setParseAction(self.act_ignore)
+        comparison_expr = (variable + comparison_var + variable).setParseAction(self.act_ignore)
         ignoreme_expr = (variable + '==' + Word(string.digits)).setParseAction(self.act_ignore)
+
         atom << Or([
+            offset_expr,
             variable,
             ignoreme_expr,
+            comparison_expr,
             bracketed_atom,
             (count_specifier + 'of' + variable_list).setParseAction(self.act_multiselector),
         ])
+
         expression << (atom + Optional(
             Or([
                 'and' + expression,
